@@ -1,0 +1,26 @@
+# Private data: never commit
+sessions/
+*_instagram_state.json
+*.cookies
+cookies*.json
+storage_state*.json
+.env
+.env.*
+!.env.example
+downloads/
+media/
+inbox/
+notes/
+8 - Instagram Second Brain/
+*.mp4
+*.mov
+*.mkv
+*.wav
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
