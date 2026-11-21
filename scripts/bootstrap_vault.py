@@ -1,4 +1,4 @@
-"""Create the Instagram second-brain skeleton inside an Obsidian vault.
+"""Create the Instagram Brain area inside an Obsidian vault.
 
 Existing files and folders are never modified or overwritten.
 Usage: python scripts/bootstrap_vault.py --vault "<path>" [--dry-run]
@@ -7,21 +7,22 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT_NAME = "8 - Instagram Second Brain"
+ROOT_NAME = "Instagram Brain"
 REPO = Path(__file__).resolve().parent.parent
 
 DEFAULT_FOLDERS = [
-    "01-ai-ml-projects",
-    "02-quant-projects",
-    "03-reels",
-    "04-cold-emails",
-    "05-internships",
+    "AI-ML Projects",
+    "Quant Projects",
+    "Reels and Content",
+    "Cold Emails",
+    "Internships",
 ]
-FIXED_FOLDERS = ["00-meta", "06-inbox", "07-drafts", ".claude/commands"]
+FIXED_FOLDERS = ["Inbox", "Drafts"]
 
+# destination relative to the vault root -> template source
 FILES = {
-    "CLAUDE.md": REPO / "templates" / "vault-CLAUDE.md",
-    "00-meta/index.md": REPO / "templates" / "index.md",
+    f"{ROOT_NAME}/{ROOT_NAME}.md": REPO / "templates" / "instagram-brain.md",
+    "Templates/Saved Post.md": REPO / "templates" / "saved-post.md",
 }
 
 
@@ -31,7 +32,7 @@ def plan(vault: Path, folders: list[str]) -> list[tuple[str, Path, Path | None]]
     for name in FIXED_FOLDERS + folders:
         steps.append(("dir", root / name, None))
     for rel, src in FILES.items():
-        steps.append(("file", root / rel, src))
+        steps.append(("file", vault / rel, src))
     return steps
 
 
@@ -58,7 +59,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--vault", required=True, type=Path, help="Obsidian vault root")
     p.add_argument("--folders", nargs="*", default=DEFAULT_FOLDERS,
-                   help="Instagram folder names, e.g. 06-xyz (default: the five starter folders)")
+                   help="Instagram folder names (default: the five starter folders)")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
 
