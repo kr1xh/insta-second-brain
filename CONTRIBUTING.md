@@ -2,6 +2,10 @@
 
 Goal: turn Instagram saved folders into an Obsidian vault second brain. See README for phases.
 
+## Setup
+
+Enable the pre-commit guard once: `git config core.hooksPath .githooks`
+
 ## Rules
 
 - This repo is public. Never commit cookies, `sessions/`, `storage_state*.json`, downloaded media, or vault notes. They are gitignored; keep it that way.
