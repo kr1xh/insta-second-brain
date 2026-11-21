@@ -9,7 +9,7 @@ Turn your saved Instagram folders into a searchable second brain in Obsidian, in
 1. Lists your Instagram saved collections.
 2. Analyzes each post or reel locally: caption, comments, on-screen text (OCR), transcript (Whisper), key frames.
 3. Writes one Markdown note per post into an Obsidian vault, grouped like your Instagram folders, with frontmatter, wikilinks and an index.
-4. Lets Claude Code query the vault and draft emails, project plans and reel scripts from it.
+4. Lets an AI assistant query the vault and draft emails, project plans and reel scripts from it.
 
 ## Privacy
 
