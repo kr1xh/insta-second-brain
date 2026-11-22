@@ -36,3 +36,13 @@ def test_run_continues_past_other_failures_and_still_analyses():
 
     assert weekly.run(CFG, runner=fake) == 0
     assert calls == ["capture", "capture", "analyse"]
+
+
+def test_plan_uses_triage_table_when_one_exists(tmp_path):
+    triage = tmp_path / "Instagram Brain" / "Triage"
+    triage.mkdir(parents=True)
+    (triage / "Hooks.md").write_text("| keep | [A](https://www.instagram.com/p/A/) | x | y |\n", encoding="utf-8")
+    steps = weekly.plan({**CFG, "vault": str(tmp_path)})
+    cold, hooks = steps[0], steps[1]
+    assert "--picks" not in cold
+    assert hooks[hooks.index("--picks") + 1] == str(triage / "Hooks.md")
