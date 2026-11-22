@@ -13,6 +13,9 @@ kind: reel                  # post | reel
 captured: 2026-11-22
 status: raw                 # raw | distilled
 tags: []
+also_in: []                # other collections the post is saved in (written by the sweep)
+gated: true                # optional: real content is behind a comment gate
+promoted: []               # written by /ig-promote: notes this post fed into
 ```
 
 `folder` always keeps the Instagram collection, even though the note lives in a grouped area. That keeps the mapping reversible.

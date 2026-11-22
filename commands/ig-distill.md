@@ -11,5 +11,6 @@ For each note with `status: raw` (filtered by the folder if one is given, at mos
 1. Read the caption, OCR text and transcript already in the note. For image posts, read at most 4 slide images from the cache folder. For reels, use the contact sheet in the cache `map*` folder only if the OCR text is not enough.
 2. Fill in the summary callout, "What's shown", "What's said" and "Why it matters" following `docs/note-format.md`. Ignore transcripts that are only music. Do not invent content that is gated behind "comment a keyword"; write that it was not captured.
 3. Rename the note to `Creator - Short Title.md`, add `[[wikilinks]]` to related notes, set `status: distilled`, and add `tags`.
+   If the real content is gated ("comment a keyword", "check the comments") and was not captured, add `gated: true`.
 4. Add one line to the hub index in `Instagram Brain.md` (newest first) and one line to `Log.md`.
 5. Never delete a note. Do not overwrite an existing note with the new name without asking.
