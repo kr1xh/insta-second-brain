@@ -124,9 +124,9 @@ def load_state(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def analyse_video(ig_py: str, video: Path, out: Path) -> tuple[list[str], str]:
+def analyse_video(ig_py: str, video: Path, out: Path, model: str) -> tuple[list[str], str]:
     out.mkdir(parents=True, exist_ok=True)
-    run = subprocess.run(["uv", "run", ig_py, "video", str(video), "--out", str(out)],
+    run = subprocess.run(["uv", "run", ig_py, "video", str(video), "--out", str(out), "--model", model],
                          capture_output=True, text=True, encoding="utf-8")
     if run.returncode != 0:
         return [], ""
@@ -213,7 +213,7 @@ async def cmd_run(args) -> int:
                         kind = "reel"
                         file = cache / f"{j:02d}.mp4"
                         file.write_bytes(res.data)
-                        t, s = analyse_video(args.ig_py, file, cache / f"map{j:02d}")
+                        t, s = analyse_video(args.ig_py, file, cache / f"map{j:02d}", args.whisper_model)
                         texts += t
                         speech += s
                     else:
@@ -251,6 +251,7 @@ def main(argv=None) -> int:
     r.add_argument("--map", required=True, help="JSON file: collection name -> area folder")
     r.add_argument("--ig-py", required=True, help="path to doughrun's ig.py")
     r.add_argument("--limit", type=int, default=20)
+    r.add_argument("--whisper-model", default="small", help="smaller models use less memory")
     r.add_argument("--state-dir", default=str(DEFAULT_STATE))
     r.add_argument("--pause-min", type=float, default=12)
     r.add_argument("--pause-max", type=float, default=25)
