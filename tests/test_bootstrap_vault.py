@@ -11,7 +11,7 @@ def test_creates_area(tmp_path):
     assert (root / f"{bv.ROOT_NAME}.md").is_file()
     assert (root / "Inbox").is_dir()
     assert (root / "Drafts").is_dir()
-    assert (root / "AI-ML Projects").is_dir()
+    assert all((root / name).is_dir() for name in bv.DEFAULT_FOLDERS)
     assert (tmp_path / "Templates" / "Saved Post.md").is_file()
 
 
