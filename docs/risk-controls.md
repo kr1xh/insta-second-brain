@@ -34,6 +34,7 @@ Sessions, cookies, downloaded media and your notes are never committed. `.gitign
 
 ## Cleanup (when the sweep is done)
 
+- Run `python scripts/cleanup.py` to see what would be removed (sessions, downloads, sweep cache), then `python scripts/cleanup.py --yes` to delete it. Add `--include-state` to also drop sweep progress and the folder map. It never touches your vault.
 - Delete `~/.instagram-mcp/sessions/` and `~/.instagram-mcp/downloads/`.
 - Delete doughrun's browser profile and any downloaded media it kept.
 - Remove the tools if you no longer need them: `claude mcp remove instagram`, `claude plugin uninstall instagram-scraper@instagram-scraper`.
