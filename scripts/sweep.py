@@ -100,7 +100,64 @@ def keep_speech(meta: dict, langs: set[str], min_prob: float = 0.8) -> bool:
         and float(meta.get("language_probability") or 0) >= min_prob
 
 
-def render_note(*, source, creator, collection, kind, caption, likes, images, has_video):
+def author_comments(html: str, author: str) -> list[str]:
+    """Comments the post's own creator wrote, from the JSON the post page embeds, in page order."""
+    found: list[str] = []
+    for blob in re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
+        try:
+            stack = [json.loads(blob)]
+        except ValueError:
+            continue
+        while stack:
+            o = stack.pop(0)
+            if isinstance(o, dict):
+                user = (o.get("user") or {}).get("username") if isinstance(o.get("user"), dict) else None
+                text = o.get("text")
+                if "created_at" in o and isinstance(text, str) and user and user.casefold() == author.casefold():
+                    text = text.replace("�", "")
+                    if text.strip() and text not in found:
+                        found.append(text)
+                stack.extend(o.values())
+            elif isinstance(o, list):
+                stack.extend(o)
+    return found
+
+
+def comments_block(creator_comments: list[str]) -> list[str]:
+    lines = ["", "**Creator's comments:**"]
+    for c in creator_comments:
+        lines += [""] + [f"> {line}" if line.strip() else ">" for line in c.strip().splitlines()]
+    return lines
+
+
+def needs_comments(note: str) -> bool:
+    """A gated note, or one whose caption points at the comments, that was not checked yet."""
+    head = note.split("\n---", 1)[0]
+    if "comments_checked:" in head or PENDING in note:  # analyse may still rewrite a pending note
+        return False
+    caption = note.split("## Caption and comments", 1)[-1].split("\n## ", 1)[0].lower()
+    return "gated: true" in head or "comment" in caption.replace("comments not read", "")
+
+
+def add_creator_comments(note: str, comments: list[str]) -> str:
+    """Mark the note checked and, if the creator commented, add those comments to its caption section."""
+    note = re.sub(r"^(status: .*)$", r"\1\ncomments_checked: true", note, count=1, flags=re.M)
+    if not comments:
+        return note
+    start = note.index("## Caption and comments")
+    end = note.find("\n## ", start + 1)
+    section = note[start:end if end != -1 else len(note)]
+    block = "\n".join(comments_block(comments)) + "\n"
+    likes = re.search(r"^.*likes at capture\. Comments not read\.$", section, re.M)
+    if likes:
+        new = section.replace(likes.group(0), block.lstrip("\n") + "\n" +
+                              likes.group(0).replace("Comments not read.", "Other comments not read."), 1)
+    else:
+        new = section.rstrip("\n") + "\n" + block
+    return note.replace(section, new, 1)
+
+
+def render_note(*, source, creator, collection, kind, caption, likes, images, has_video, creator_comments=()):
     shown = [PENDING] if has_video else ["(no on-screen text found)"]
     if images:
         shown.append(f"\n{images} image slide(s) saved but not read yet.")
@@ -112,8 +169,12 @@ def render_note(*, source, creator, collection, kind, caption, likes, images, ha
         "## What's said", PENDING if has_video else "(no video)", "",
         "## Caption and comments", caption.strip() if caption else "(no caption)", "",
     ]
+    if creator_comments:
+        lines += comments_block(list(creator_comments))
+        lines.append("")
     if likes is not None:
-        lines.append(f"{likes} likes at capture. Comments not read.")
+        note = "Other comments not read." if creator_comments else "Comments not read."
+        lines.append(f"{likes} likes at capture. {note}")
     lines += ["", "## Why it matters", "(fill in when distilled)", "", "## Related", "- [[Instagram Brain]]", ""]
     return "\n".join(lines)
 
@@ -339,6 +400,35 @@ async def cmd_triage(args) -> int:
     return 0
 
 
+async def cmd_comments(args) -> int:
+    """Revisit gated notes (paced) and add the creator's own comments, e.g. a template 'in the comments'."""
+    notes = index_notes(Path(args.vault) / AREA_ROOT)
+    todo = [(code, p) for code, p in notes.items() if needs_comments(p.read_text(encoding="utf-8"))][: args.limit]
+    print(f"{len(todo)} note(s) to check for creator comments", flush=True)
+    found = 0
+    browser = await open_browser(args.handle)
+    try:
+        for i, (code, path) in enumerate(todo, 1):
+            text = path.read_text(encoding="utf-8")
+            creator = (re.search(r'^creator: "?@?([^"\n]+)"?$', text, re.M) or [None, ""])[1]
+            async with browser.page() as page:
+                await goto(page, f"https://www.instagram.com/p/{code}/")
+                html = await page.content()
+            comments = author_comments(html, creator) if creator else []
+            path.write_text(add_creator_comments(text, comments), encoding="utf-8")
+            found += bool(comments)
+            print(f"[{i}/{len(todo)}] {code} {creator}: {len(comments)} creator comment(s)", flush=True)
+            if i < len(todo):
+                await asyncio.sleep(random.uniform(args.pause_min, args.pause_max))
+    except Blocked as e:
+        print(f"STOPPED: Instagram showed {e}. Progress is saved. Do not retry today.", file=sys.stderr)
+        return 4
+    finally:
+        await browser.shutdown()
+    print(f"done: creator comments found on {found} of {len(todo)}")
+    return 0
+
+
 async def cmd_capture(args) -> int:
     import httpx
     from instagram_sdk.downloader import extension_from_url, fetch_bytes, is_downloadable_media_url
@@ -386,6 +476,7 @@ async def cmd_capture(args) -> int:
                         post = await post_ep.fetch(page, id_or_url=code)
                         if is_blocked_url(page.url):
                             raise Blocked(page.url)
+                        html = await page.content() if post else ""
                     if post is None:
                         print(f"[{i}/{len(todo)}] {code} could not be loaded, skipped", flush=True)
                         continue
@@ -409,7 +500,8 @@ async def cmd_capture(args) -> int:
                         note.write_text(render_note(
                             source=post.url, creator=creator, collection=args.collection,
                             kind="reel" if videos else "post", caption=post.caption or "",
-                            likes=post.like_count, images=images, has_video=bool(videos)), encoding="utf-8")
+                            likes=post.like_count, images=images, has_video=bool(videos),
+                            creator_comments=author_comments(html, creator)), encoding="utf-8")
                         existing[code] = note
                         written += 1
                     print(f"[{i}/{len(todo)}] {code} {creator} ({videos} video, {images} image)", flush=True)
@@ -511,6 +603,11 @@ def main(argv=None) -> int:
     tri.add_argument("--max-scrolls", type=int, default=60)
     tri.add_argument("--force", action="store_true", help="overwrite an existing triage table")
 
+    com = sub.add_parser("comments", help="add the creator's own comments to gated notes already captured")
+    paced(com)
+    com.add_argument("--vault", required=True)
+    com.add_argument("--limit", type=int, default=20)
+
     an = sub.add_parser("analyse", help="offline OCR + transcript for captured videos")
     an.add_argument("--vault", required=True)
     an.add_argument("--ig-py", required=True, help="path to doughrun's ig.py")
@@ -524,7 +621,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     if args.cmd == "analyse":
         return cmd_analyse(args)
-    commands = {"collections": cmd_collections, "capture": cmd_capture, "triage": cmd_triage}
+    commands = {"collections": cmd_collections, "capture": cmd_capture, "triage": cmd_triage,
+                "comments": cmd_comments}
     return asyncio.run(commands[args.cmd](args))
 
 

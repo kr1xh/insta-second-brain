@@ -31,7 +31,9 @@ $ig = "C:\path\to\ig-tools\instagram-scraper\plugins\instagram-scraper\skills\in
 - **Memory.** `--whisper-model` defaults to `small`. Use `base` on machines with little free RAM.
 - **Speed.** On a 4-core laptop CPU, OCR is the slowest step (about 3.5 s per frame). `--ocr-every 10` (the default) OCRs once a second instead of doughrun's 5 times a second, through `scripts/ig_video.py`, without editing doughrun. Measured on a 10 s reel: OCR 72 s to 35 s, total 90 s to 73 s; the text lost was flickering numbers. `--ocr-every 0` restores doughrun's rate.
 
-Known limits: comments are not read, so content gated behind "comment a keyword" is not captured. Image slides are saved but read only when a note is distilled.
+- **Creator comments.** Many creators put the template or link "in the comments". The post page embeds its comments as JSON, so `capture` adds the creator's own comments to the note at no extra request. For notes captured earlier, `comments --vault <vault> --limit N` revisits gated notes (or captions that mention comments), paced, and adds them; each note is marked `comments_checked: true` so it is visited once. Notes still waiting for `analyse` are skipped.
+
+Known limits: other people's comments are not read, and content sent by DM ("comment EMAIL and I'll send it") cannot be captured. Image slides are saved but read only when a note is distilled.
 
 ## Weekly run
 
