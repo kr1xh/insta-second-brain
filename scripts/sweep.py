@@ -364,6 +364,22 @@ async def cmd_collections(args) -> int:
     return 0
 
 
+async def fetch_post(browser, post_ep, code: str) -> tuple[object | None, str, str | None]:
+    """(post, page html, error). A slow or failed page is reported, not raised, so one post cannot
+    end a whole capture; a login or challenge page still raises Blocked and stops everything."""
+    try:
+        async with browser.page() as page:
+            post = await post_ep.fetch(page, id_or_url=code)
+            if is_blocked_url(page.url):
+                raise Blocked(page.url)
+            html = await page.content() if post else ""
+            return post, html, None
+    except Blocked:
+        raise
+    except Exception as e:  # timeouts, navigation errors, parse failures
+        return None, "", f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
+
+
 async def find_collection(page, handle: str, name: str) -> dict | None:
     match = [c for c in await list_collections(page, handle) if c["name"].casefold() == name.casefold()]
     return match[0] if match else None
@@ -472,13 +488,10 @@ async def cmd_capture(args) -> int:
                     linked += 1
                     print(f"[{i}/{len(todo)}] {code} already captured, linked", flush=True)
                 else:
-                    async with browser.page() as page:
-                        post = await post_ep.fetch(page, id_or_url=code)
-                        if is_blocked_url(page.url):
-                            raise Blocked(page.url)
-                        html = await page.content() if post else ""
+                    post, html, error = await fetch_post(browser, post_ep, code)
                     if post is None:
-                        print(f"[{i}/{len(todo)}] {code} could not be loaded, skipped", flush=True)
+                        why = f" ({error})" if error else ""
+                        print(f"[{i}/{len(todo)}] {code} could not be loaded{why}, skipped; retried next run", flush=True)
                         continue
                     cache = state_dir / "cache" / code
                     cache.mkdir(parents=True, exist_ok=True)
