@@ -11,11 +11,14 @@ ROOT_NAME = "Instagram Brain"
 REPO = Path(__file__).resolve().parent.parent
 
 DEFAULT_FOLDERS = [
-    "AI-ML Projects",
-    "Quant Projects",
-    "Reels and Content",
-    "Cold Emails",
-    "Internships",
+    "AI-ML",
+    "Quant",
+    "Content Creation",
+    "Internships and Research",
+    "Admissions and Profile",
+    "Web Dev",
+    "Startup and Freelance",
+    "Personal Growth",
 ]
 FIXED_FOLDERS = ["Inbox", "Drafts"]
 
@@ -59,7 +62,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--vault", required=True, type=Path, help="Obsidian vault root")
     p.add_argument("--folders", nargs="*", default=DEFAULT_FOLDERS,
-                   help="Instagram folder names (default: the five starter folders)")
+                   help="Instagram folder names (default: eight grouped areas)")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
 
