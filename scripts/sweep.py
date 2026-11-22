@@ -139,6 +139,24 @@ def add_also_in(note: str, collection: str) -> str:
     return note
 
 
+COLLECTION_KEYS = ("collections_unified_with_auto_collections",               # 2026 shape, under data.viewer
+                   "xdt_api__v1__collections__list_graphql_connection")       # older shape, under data
+
+
+def parse_collection_counts(payload: dict) -> list[dict]:
+    """Collections GraphQL payload -> [{id, name, posts}], accepting old and new shapes."""
+    data = (payload or {}).get("data") or {}
+    scopes = [data.get("viewer") or {}, data]
+    connection = next((s[k] for s in scopes for k in COLLECTION_KEYS if isinstance(s.get(k), dict)), {})
+    out = []
+    for e in connection.get("edges") or []:
+        node = (e or {}).get("node") or {}
+        if node.get("collection_id"):
+            out.append({"id": str(node["collection_id"]), "name": node.get("collection_name") or "",
+                        "posts": node.get("collection_media_count")})
+    return out
+
+
 def index_notes(area_root: Path) -> dict[str, Path]:
     """shortcode -> note path, read from each note's source line (survives renames)."""
     found = {}
@@ -201,13 +219,26 @@ async def cmd_collections(args) -> int:
     browser = await open_browser(args.handle)
     try:
         async with browser.page() as page:
+            counts: dict[str, int | None] = {}
+
+            async def on_response(resp):
+                if "graphql" not in resp.url:
+                    return
+                try:
+                    for c in parse_collection_counts(await resp.json()):
+                        counts[c["id"]] = c["posts"]
+                except Exception:
+                    pass
+
+            if args.counts:
+                page.on("response", on_response)
             cols = await list_collections(page, args.handle)
             if args.counts:
                 for c in cols:
-                    await goto(page, f"https://www.instagram.com/{args.handle}/saved/{c['slug']}/{c['id']}/")
-                    c["posts"] = len(await collect_links(page, POST_JS, None, scrolls=args.max_scrolls))
-                    print(f"{c['name']}\t{c['posts']}", flush=True)
-                    await asyncio.sleep(random.uniform(args.pause_min, args.pause_max))
+                    c["posts"] = counts.get(c["id"])
+                    print(f"{c['name']}\t{c['posts'] if c['posts'] is not None else '?'}")
+                known = [c["posts"] for c in cols if c["posts"] is not None]
+                print(f"\n{len(cols)} collections, {len(known)} with counts, {sum(known)} saved posts in total")
                 save_json(state_dir / "collections.json", {"collections": cols})
             else:
                 for c in cols:

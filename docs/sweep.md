@@ -4,7 +4,7 @@
 
 | Stage | Touches Instagram | What it does |
 |---|---|---|
-| `collections` | yes, read-only | Lists collections. `--counts` also counts the posts in each (one paced page visit per collection) and saves `collections.json` in the state directory. |
+| `collections` | yes, read-only | Lists collections. `--counts` adds the exact post count of each, read from the collections GraphQL response while the saved page loads (one page visit in total), and saves `collections.json` in the state directory. |
 | `capture` | yes, read-only | Downloads posts of one collection, newest first, with a 12 to 25 s pause, and writes a raw note per post. Closes the browser when done. |
 | `analyse` | no | For each captured video: on-screen text (OCR), transcript (Whisper), key-frame contact sheet. Fills in the note, then deletes the video and the frame scan. |
 
