@@ -32,3 +32,16 @@ $ig = "C:\path\to\ig-tools\instagram-scraper\plugins\instagram-scraper\skills\in
 - **Speed.** On a 4-core laptop CPU, OCR is the slowest step (about 3.5 s per frame). `--ocr-every 10` (the default) OCRs once a second instead of doughrun's 5 times a second, through `scripts/ig_video.py`, without editing doughrun. Measured on a 10 s reel: OCR 72 s to 35 s, total 90 s to 73 s; the text lost was flickering numbers. `--ocr-every 0` restores doughrun's rate.
 
 Known limits: comments are not read, so content gated behind "comment a keyword" is not captured. Image slides are saved but read only when a note is distilled.
+
+## Weekly run
+
+`scripts/weekly.py --config ~/.insta-second-brain/weekly.json` captures up to `limit` posts (newest first, skipping captured ones) from each listed collection, then runs `analyse`. It stops everything if a capture exits with code 4 (Instagram challenge or login page) and appends all output to `weekly.log` next to the config. Keep the config private; see the docstring in `scripts/weekly.py` for its fields.
+
+To run it every Sunday at 22:00 on Windows (the task needs you logged in, because the browser window is visible):
+
+```powershell
+schtasks /Create /TN "insta-second-brain weekly" /SC WEEKLY /D SUN /ST 22:00 `
+  /TR "\"C:\path\to\venv\Scripts\python.exe\" \"C:\path\to\insta-second-brain\scripts\weekly.py\" --config \"%USERPROFILE%\.insta-second-brain\weekly.json\""
+```
+
+Remove it with `schtasks /Delete /TN "insta-second-brain weekly" /F`.
