@@ -1,10 +1,12 @@
-"""Weekly unattended run: capture new saves from a few collections, then analyse them.
+"""Unattended capture runs: weekly (a fixed limit per collection) or daily (a total budget in priority order).
 
 Usage: python scripts/weekly.py --config ~/.insta-second-brain/weekly.json
 
 Config (keep it private, outside the repo):
   {"python": "<instagram-mcp venv python>", "handle": "...", "vault": "...", "map": "...",
    "ig_py": "<doughrun ig.py>", "collections": ["Cold email", "..."], "limit": 20}
+Add "daily_total": 10 for daily mode: collections are filled in the listed order from their
+remaining triage keeps, untriaged ones last, and "limit" is ignored.
 
 Stops everything if Instagram shows a challenge or login page (exit code 4 from capture).
 Output is appended to weekly.log next to the config.
@@ -45,24 +47,6 @@ def remaining_keeps(vault: str | Path, collections: list[str], state: dict) -> d
     return out
 
 
-def allocate(order: list[str], remaining: dict[str, int | None], budget: int) -> list[tuple[str, int]]:
-    """Spend a daily budget on collections in priority order; untriaged ones (None) only get what is left."""
-    plan_: list[tuple[str, int]] = []
-    for name in order:
-        left = remaining.get(name)
-        if budget <= 0:
-            break
-        if left:
-            take = min(left, budget)
-            plan_.append((name, take))
-            budget -= take
-    for name in order:
-        if budget > 0 and remaining.get(name, None) is None and name in remaining:
-            plan_.append((name, budget))
-            budget = 0
-    return plan_
-
-
 def capture_cmd(cfg: dict, name: str, limit: int) -> list[str]:
     cmd = [cfg["python"], str(SWEEP), "capture", "--handle", cfg["handle"], "--collection", name,
            "--vault", cfg["vault"], "--map", cfg["map"], "--limit", str(limit)]
@@ -72,17 +56,39 @@ def capture_cmd(cfg: dict, name: str, limit: int) -> list[str]:
     return cmd
 
 
+def analyse_cmd(cfg: dict) -> list[str]:
+    return [cfg["python"], str(SWEEP), "analyse", "--vault", cfg["vault"], "--ig-py", cfg["ig_py"]]
+
+
 def plan(cfg: dict) -> list[list[str]]:
-    """Captures (per collection, or within a daily total when `daily_total` is set), then one analyse."""
-    if cfg.get("daily_total"):
-        state_path = Path(cfg.get("state", Path.home() / ".insta-second-brain" / "sweep_state.json"))
-        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
-        remaining = remaining_keeps(cfg["vault"], cfg["collections"], state)
-        steps = [capture_cmd(cfg, name, n) for name, n in allocate(cfg["collections"], remaining, int(cfg["daily_total"]))]
-    else:
-        steps = [capture_cmd(cfg, name, int(cfg.get("limit", 20))) for name in cfg["collections"]]
-    steps.append([cfg["python"], str(SWEEP), "analyse", "--vault", cfg["vault"], "--ig-py", cfg["ig_py"]])
+    """Weekly mode: one capture per collection with the same limit, then one analyse."""
+    steps = [capture_cmd(cfg, name, int(cfg.get("limit", 20))) for name in cfg["collections"]]
+    steps.append(analyse_cmd(cfg))
     return steps
+
+
+def run_daily(cfg: dict, runner, load_state) -> int:
+    """Daily mode: spend `daily_total` captures on collections in priority order (untriaged ones last).
+
+    The budget is charged with what each capture actually added to sweep state, so a folder whose
+    remaining keeps can never be captured (deleted, unsaved, always timing out) passes its share on.
+    """
+    budget = int(cfg["daily_total"])
+    order = cfg["collections"]
+    first = remaining_keeps(cfg["vault"], order, load_state())
+    queue = [n for n in order if first[n]] + [n for n in order if first[n] is None]
+    for name in queue:
+        if budget <= 0:
+            break
+        left = remaining_keeps(cfg["vault"], [name], load_state())[name]
+        if left == 0:
+            continue
+        take = budget if left is None else min(left, budget)
+        before = len(load_state().get(name, []))
+        if runner(capture_cmd(cfg, name, take)) == BLOCKED:
+            return BLOCKED
+        budget -= max(0, len(load_state().get(name, [])) - before)
+    return runner(analyse_cmd(cfg))
 
 
 def no_window_flags() -> int:
@@ -113,7 +119,12 @@ def main(argv=None) -> int:
             return subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, creationflags=no_window_flags(),
                                   env={**os.environ, "PYTHONIOENCODING": "utf-8"}).returncode
 
-    code = run(cfg, runner)
+    state_path = Path(cfg.get("state", args.config.with_name("sweep_state.json")))
+
+    def load_state() -> dict:
+        return json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+
+    code = run_daily(cfg, runner, load_state) if cfg.get("daily_total") else run(cfg, runner)
     with log.open("a", encoding="utf-8") as fh:
         fh.write(f"== finished with exit code {code}\n")
     return code
