@@ -1,19 +1,25 @@
-"""Capture an Instagram saved collection into raw notes in an Obsidian vault.
+"""Capture Instagram saved collections into raw notes in an Obsidian vault.
+
+Two stages, so the browser is never open while the heavy analysis runs:
+
+  capture   read-only browser pass: download media and write raw notes (fast, paced)
+  analyse   offline pass: OCR + transcript per video, fill in the notes, delete bulky files
 
 Run with the Python from the instagram-mcp virtualenv (it provides instagram_sdk):
 
-  venv\\Scripts\\python scripts/sweep.py collections --handle HANDLE
-  venv\\Scripts\\python scripts/sweep.py run --handle HANDLE --collection "Cold email" \\
+  venv\\Scripts\\python scripts/sweep.py collections --handle HANDLE [--counts]
+  venv\\Scripts\\python scripts/sweep.py capture --handle HANDLE --collection "Cold email" \\
       --vault "C:\\path\\to\\vault" --map folder-map.json --limit 20
+  venv\\Scripts\\python scripts/sweep.py analyse --vault "C:\\path\\to\\vault" --ig-py path\\to\\ig.py
 
-Read-only against Instagram. Posts are fetched one at a time with pauses.
-Media and analysis go to the state directory, never into git or the vault.
+Media and analysis live in the state directory, never in git or the vault.
 """
 import argparse
 import asyncio
 import json
 import random
 import re
+import shutil
 import subprocess
 import sys
 from datetime import date
@@ -21,14 +27,22 @@ from pathlib import Path
 
 AREA_ROOT = "Instagram Brain"
 INBOX = "Inbox"
+PENDING = "<!-- analysis pending -->"
 DEFAULT_STATE = Path.home() / ".insta-second-brain"
 SESSION_DIR = Path.home() / ".instagram-mcp" / "sessions"
+BLOCKED_MARKERS = ("/challenge", "/accounts/login", "/accounts/suspended", "/accounts/disabled")
 
 COLLECTION_JS = r"""() => [...document.querySelectorAll('a[href*="/saved/"]')]
   .map(a => ({href: a.getAttribute('href'), text: (a.innerText || '').trim().replace(/\n+/g, ' ')}))"""
 POST_JS = r"""() => [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')]
   .map(a => a.getAttribute('href'))"""
 
+
+class Blocked(RuntimeError):
+    """Instagram showed a login, challenge or suspension page."""
+
+
+# ---------- pure helpers ----------
 
 def safe_name(text: str) -> str:
     return re.sub(r'[\\/:*?"<>|\r\n]+', " ", text).strip(" .")[:120]
@@ -41,10 +55,9 @@ def parse_collections(rows: list[dict]) -> list[dict]:
         parts = row["href"].strip("/").split("/")
         if len(parts) < 4 or parts[1] != "saved" or not row["text"]:
             continue
-        key = parts[3]
-        if key in seen:
+        if parts[3] in seen:
             continue
-        seen.add(key)
+        seen.add(parts[3])
         out.append({"name": row["text"], "slug": parts[2], "id": parts[3]})
     return out
 
@@ -57,8 +70,12 @@ def shortcode_from_href(href: str) -> str:
     return href.strip("/").split("/")[-1]
 
 
+def is_blocked_url(url: str) -> bool:
+    return any(marker in url for marker in BLOCKED_MARKERS)
+
+
 def screen_text(video_map_md: str, cap: int = 60) -> list[str]:
-    """Unique on-screen text fragments from a doughrun video map, in order."""
+    """Unique on-screen text fragments from a doughrun video map, persistent text first."""
     def split(text: str) -> list[str]:
         return [p.strip().strip('"') for p in text.split('" | "') if p.strip().strip('"')]
 
@@ -73,34 +90,86 @@ def screen_text(video_map_md: str, cap: int = 60) -> list[str]:
     return found[:cap]
 
 
-def render_note(*, source, creator, collection, kind, caption, likes, texts, transcript, images):
-    lines = [
-        "---",
-        "type: saved-post",
-        f"source: {source}",
-        f'creator: "@{creator}"',
-        f"folder: {collection}",
-        f"kind: {kind}",
-        f"captured: {date.today().isoformat()}",
-        "status: raw",
-        "tags: []",
-        "---",
-        f"# {creator} - {shortcode_from_href(source)}",
-        "",
-        "> [!summary]",
-        "> Raw capture, not yet distilled.",
-        "",
-        "## What's shown",
-    ]
-    lines += [f"- {t}" for t in texts] or ["(no on-screen text found)"]
+def keep_speech(meta: dict, langs: set[str], min_prob: float = 0.8) -> bool:
+    """Whisper invents speech from music; keep a transcript only when it looks real."""
+    return bool(meta.get("speech_detected")) and meta.get("language") in langs \
+        and float(meta.get("language_probability") or 0) >= min_prob
+
+
+def render_note(*, source, creator, collection, kind, caption, likes, images, has_video):
+    shown = [PENDING] if has_video else ["(no on-screen text found)"]
     if images:
-        lines.append(f"\n{images} image slide(s) saved but not read yet.")
-    lines += ["", "## What's said", transcript.strip() or "(no speech detected)", "", "## Caption and comments"]
-    lines += [caption.strip() if caption else "(no caption)", ""]
+        shown.append(f"\n{images} image slide(s) saved but not read yet.")
+    lines = [
+        "---", "type: saved-post", f"source: {source}", f'creator: "@{creator}"', f"folder: {collection}",
+        f"kind: {kind}", f"captured: {date.today().isoformat()}", "status: raw", "tags: []", "---",
+        f"# {creator} - {shortcode_from_href(source)}", "", "> [!summary]", "> Raw capture, not yet distilled.", "",
+        "## What's shown", *shown, "",
+        "## What's said", PENDING if has_video else "(no video)", "",
+        "## Caption and comments", caption.strip() if caption else "(no caption)", "",
+    ]
     if likes is not None:
         lines.append(f"{likes} likes at capture. Comments not read.")
     lines += ["", "## Why it matters", "(fill in when distilled)", "", "## Related", "- [[Instagram Brain]]", ""]
     return "\n".join(lines)
+
+
+def fill_analysis(note: str, texts: list[str], transcript: str) -> str:
+    """Replace the two pending markers with the analysis results."""
+    shown = "\n".join(f"- {t}" for t in texts) or "(no on-screen text found)"
+    said = transcript.strip() or "(no usable speech)"
+    note = note.replace(f"## What's shown\n{PENDING}", f"## What's shown\n{shown}", 1)
+    return note.replace(f"## What's said\n{PENDING}", f"## What's said\n{said}", 1)
+
+
+def add_also_in(note: str, collection: str) -> str:
+    """Record that a post is saved in another collection too. No-op if already recorded."""
+    folder = re.search(r"^folder: (.*)$", note, re.M)
+    if folder and folder.group(1).strip() == collection:
+        return note
+    also = re.search(r"^also_in: \[(.*)\]$", note, re.M)
+    if also:
+        items = [i.strip() for i in also.group(1).split(",") if i.strip()]
+        if collection in items:
+            return note
+        return note.replace(also.group(0), f"also_in: [{', '.join(items + [collection])}]", 1)
+    if folder:
+        return note.replace(folder.group(0), f"{folder.group(0)}\nalso_in: [{collection}]", 1)
+    return note
+
+
+def index_notes(area_root: Path) -> dict[str, Path]:
+    """shortcode -> note path, read from each note's source line (survives renames)."""
+    found = {}
+    for p in area_root.rglob("*.md"):
+        m = re.search(r"^source: \S*/(?:p|reel)/([^/\s]+)/?", p.read_text(encoding="utf-8"), re.M)
+        if m:
+            found[m.group(1)] = p
+    return found
+
+
+# ---------- state ----------
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def save_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+# ---------- browser stages ----------
+
+async def open_browser(handle: str):
+    from instagram_sdk.browser import BrowserSession
+    return BrowserSession(SESSION_DIR / f"{handle}_instagram_state.json", idle_timeout_s=0, headless=False)
+
+
+async def goto(page, url: str) -> None:
+    await page.goto(url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(5000)
+    if is_blocked_url(page.url):
+        raise Blocked(page.url)
 
 
 async def collect_links(page, js: str, want: int | None, scrolls: int = 40) -> list:
@@ -120,143 +189,200 @@ async def collect_links(page, js: str, want: int | None, scrolls: int = 40) -> l
     return list(seen.values())
 
 
-def load_state(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-
-
-def analyse_video(ig_py: str, video: Path, out: Path, model: str) -> tuple[list[str], str]:
-    out.mkdir(parents=True, exist_ok=True)
-    run = subprocess.run(["uv", "run", ig_py, "video", str(video), "--out", str(out), "--model", model],
-                         capture_output=True, text=True, encoding="utf-8")
-    if run.returncode != 0:
-        return [], ""
-    map_md = out / "video_map.md"
-    transcript = out / "transcript.txt"
-    texts = screen_text(map_md.read_text(encoding="utf-8")) if map_md.exists() else []
-    speech = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-    return texts, speech if "no speech" not in speech.lower() else ""
-
-
-async def open_browser(handle: str):
-    from instagram_sdk.browser import BrowserSession
-    session = SESSION_DIR / f"{handle}_instagram_state.json"
-    return BrowserSession(session, idle_timeout_s=0, headless=False)
+async def list_collections(page, handle: str) -> list[dict]:
+    await goto(page, f"https://www.instagram.com/{handle}/saved/")
+    return parse_collections(await collect_links(page, COLLECTION_JS, None, scrolls=12))
 
 
 async def cmd_collections(args) -> int:
+    state_dir = Path(args.state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
     browser = await open_browser(args.handle)
     try:
         async with browser.page() as page:
-            await page.goto(f"https://www.instagram.com/{args.handle}/saved/", wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
-            rows = await collect_links(page, COLLECTION_JS, None, scrolls=12)
-        for c in parse_collections(rows):
-            print(f"{c['name']}\t{c['id']}")
+            cols = await list_collections(page, args.handle)
+            if args.counts:
+                for c in cols:
+                    await goto(page, f"https://www.instagram.com/{args.handle}/saved/{c['slug']}/{c['id']}/")
+                    c["posts"] = len(await collect_links(page, POST_JS, None, scrolls=args.max_scrolls))
+                    print(f"{c['name']}\t{c['posts']}", flush=True)
+                    await asyncio.sleep(random.uniform(args.pause_min, args.pause_max))
+                save_json(state_dir / "collections.json", {"collections": cols})
+            else:
+                for c in cols:
+                    print(f"{c['name']}\t{c['id']}")
+    except Blocked as e:
+        print(f"STOPPED: Instagram showed {e}. Do not retry today.", file=sys.stderr)
+        return 4
     finally:
         await browser.shutdown()
     return 0
 
 
-async def cmd_run(args) -> int:
+async def cmd_capture(args) -> int:
     import httpx
     from instagram_sdk.downloader import extension_from_url, fetch_bytes, is_downloadable_media_url
     from instagram_sdk.endpoints import post as post_ep
 
-    mapping = {k.casefold(): v for k, v in json.loads(Path(args.map).read_text(encoding="utf-8")).items()}
+    mapping = {k.casefold(): v for k, v in load_json(Path(args.map)).items()}
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     state_path = state_dir / "sweep_state.json"
-    state = load_state(state_path)
+    state = load_json(state_path)
     done = set(state.get(args.collection, []))
-    area = area_for(args.collection, mapping)
-    target = Path(args.vault) / AREA_ROOT / area
+    area_root = Path(args.vault) / AREA_ROOT
+    target = area_root / area_for(args.collection, mapping)
     target.mkdir(parents=True, exist_ok=True)
+    existing = index_notes(area_root)
 
     browser = await open_browser(args.handle)
-    written = 0
+    written = linked = 0
     try:
         async with browser.page() as page:
-            await page.goto(f"https://www.instagram.com/{args.handle}/saved/", wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
-            cols = parse_collections(await collect_links(page, COLLECTION_JS, None, scrolls=12))
-            matches = [c for c in cols if c["name"].casefold() == args.collection.casefold()]
-            if not matches:
+            match = [c for c in await list_collections(page, args.handle)
+                     if c["name"].casefold() == args.collection.casefold()]
+            if not match:
                 print(f"collection not found: {args.collection}", file=sys.stderr)
                 return 2
-            col = matches[0]
-            url = f"https://www.instagram.com/{args.handle}/saved/{col['slug']}/{col['id']}/"
-            await page.goto(url, wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
+            await goto(page, f"https://www.instagram.com/{args.handle}/saved/{match[0]['slug']}/{match[0]['id']}/")
             hrefs = await collect_links(page, POST_JS, args.limit + len(done))
         todo = [h for h in hrefs if shortcode_from_href(h) not in done][: args.limit]
-        print(f"{args.collection}: {len(hrefs)} links seen, {len(todo)} to capture -> {area}")
+        print(f"{args.collection}: {len(hrefs)} links seen, {len(todo)} to capture -> {target.name}", flush=True)
 
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             for i, href in enumerate(todo, 1):
                 code = shortcode_from_href(href)
-                async with browser.page() as page:
-                    post = await post_ep.fetch(page, id_or_url=code)
-                if post is None:
-                    print(f"[{i}/{len(todo)}] {code} could not be loaded, skipped")
-                    continue
-                cache = state_dir / "cache" / code
-                cache.mkdir(parents=True, exist_ok=True)
-                texts, speech, images, kind = [], "", 0, "post"
-                for j, m in enumerate(post.media):
-                    media_url = m.video_url or m.image_url
-                    if not media_url or not is_downloadable_media_url(media_url):
+                if code in existing:
+                    note = existing[code]
+                    note.write_text(add_also_in(note.read_text(encoding="utf-8"), args.collection), encoding="utf-8")
+                    linked += 1
+                    print(f"[{i}/{len(todo)}] {code} already captured, linked", flush=True)
+                else:
+                    async with browser.page() as page:
+                        post = await post_ep.fetch(page, id_or_url=code)
+                        if is_blocked_url(page.url):
+                            raise Blocked(page.url)
+                    if post is None:
+                        print(f"[{i}/{len(todo)}] {code} could not be loaded, skipped", flush=True)
                         continue
-                    res = await fetch_bytes(client, media_url, max_bytes=None if m.video_url else 15_000_000)
-                    if not res.ok:
-                        continue
-                    if m.video_url:
-                        kind = "reel"
-                        file = cache / f"{j:02d}.mp4"
-                        file.write_bytes(res.data)
-                        t, s = analyse_video(args.ig_py, file, cache / f"map{j:02d}", args.whisper_model)
-                        texts += t
-                        speech += s
-                    else:
-                        (cache / f"{j:02d}.{extension_from_url(media_url) or 'jpg'}").write_bytes(res.data)
-                        images += 1
-                creator = post.author.username if post.author else "unknown"
-                note = target / f"{safe_name(creator)} - {code}.md"
-                if not note.exists():
-                    note.write_text(render_note(
-                        source=post.url, creator=creator, collection=args.collection, kind=kind,
-                        caption=post.caption or "", likes=post.like_count, texts=texts,
-                        transcript=speech, images=images), encoding="utf-8")
-                    written += 1
+                    cache = state_dir / "cache" / code
+                    cache.mkdir(parents=True, exist_ok=True)
+                    images = videos = 0
+                    for j, m in enumerate(post.media):
+                        url = m.video_url or m.image_url
+                        if not url or not is_downloadable_media_url(url):
+                            continue
+                        res = await fetch_bytes(client, url, max_bytes=None if m.video_url else 15_000_000)
+                        if not res.ok:
+                            continue
+                        ext = "mp4" if m.video_url else (extension_from_url(url) or "jpg")
+                        (cache / f"{j:02d}.{ext}").write_bytes(res.data)
+                        videos += bool(m.video_url)
+                        images += not m.video_url
+                    creator = post.author.username if post.author else "unknown"
+                    note = target / f"{safe_name(creator)} - {code}.md"
+                    if not note.exists():
+                        note.write_text(render_note(
+                            source=post.url, creator=creator, collection=args.collection,
+                            kind="reel" if videos else "post", caption=post.caption or "",
+                            likes=post.like_count, images=images, has_video=bool(videos)), encoding="utf-8")
+                        existing[code] = note
+                        written += 1
+                    print(f"[{i}/{len(todo)}] {code} {creator} ({videos} video, {images} image)", flush=True)
                 done.add(code)
                 state[args.collection] = sorted(done)
-                state_path.write_text(json.dumps(state, indent=1), encoding="utf-8")
-                print(f"[{i}/{len(todo)}] {code} {creator} ({kind})", flush=True)
+                save_json(state_path, state)
                 if i < len(todo):
                     await asyncio.sleep(random.uniform(args.pause_min, args.pause_max))
+    except Blocked as e:
+        print(f"STOPPED: Instagram showed {e}. Progress is saved. Do not retry today.", file=sys.stderr)
+        return 4
     finally:
         await browser.shutdown()
-    print(f"done: {written} note(s) written")
+    print(f"done: {written} new note(s), {linked} linked to existing notes. Run 'analyse' next.")
+    return 0
+
+
+# ---------- offline stage ----------
+
+def run_doughrun(ig_py: str, video: Path, out: Path, model: str) -> bool:
+    out.mkdir(parents=True, exist_ok=True)
+    run = subprocess.run(["uv", "run", ig_py, "video", str(video), "--out", str(out), "--model", model],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return run.returncode == 0 and (out / "video_map.md").exists()
+
+
+def analyse_cache(post_dir: Path, ig_py: str, model: str, langs: set[str]) -> tuple[list[str], str] | None:
+    """Analyse every video in one post's cache folder, then delete the bulky files."""
+    texts: list[str] = []
+    speech: list[str] = []
+    for video in sorted(post_dir.glob("*.mp4")):
+        out = post_dir / f"map{video.stem}"
+        if not (out / "video_map.md").exists() and not run_doughrun(ig_py, video, out, model):
+            return None
+        texts += [t for t in screen_text((out / "video_map.md").read_text(encoding="utf-8")) if t not in texts]
+        meta = load_json(out / "transcript.json")
+        transcript = out / "transcript.txt"
+        if transcript.exists() and keep_speech(meta, langs):
+            speech.append(transcript.read_text(encoding="utf-8"))
+        video.unlink()
+        shutil.rmtree(out / "scan", ignore_errors=True)
+    return texts, "\n".join(speech)
+
+
+def cmd_analyse(args) -> int:
+    state_dir = Path(args.state_dir)
+    notes = index_notes(Path(args.vault) / AREA_ROOT)
+    langs = {code.strip() for code in args.langs.split(",") if code.strip()}
+    pending = [d for d in sorted((state_dir / "cache").glob("*")) if d.is_dir() and any(d.glob("*.mp4"))]
+    pending = pending[: args.limit] if args.limit else pending
+    print(f"{len(pending)} post(s) with videos to analyse", flush=True)
+    for i, post_dir in enumerate(pending, 1):
+        result = analyse_cache(post_dir, args.ig_py, args.whisper_model, langs)
+        if result is None:
+            print(f"[{i}/{len(pending)}] {post_dir.name} analysis failed, kept for retry", flush=True)
+            continue
+        note = notes.get(post_dir.name)
+        if note and PENDING in (text := note.read_text(encoding="utf-8")):
+            note.write_text(fill_analysis(text, *result), encoding="utf-8")
+        print(f"[{i}/{len(pending)}] {post_dir.name} done", flush=True)
     return 0
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("collections", help="print collection names and ids")
-    c.add_argument("--handle", required=True)
-    r = sub.add_parser("run", help="capture one collection into raw notes")
-    r.add_argument("--handle", required=True)
-    r.add_argument("--collection", required=True)
-    r.add_argument("--vault", required=True)
-    r.add_argument("--map", required=True, help="JSON file: collection name -> area folder")
-    r.add_argument("--ig-py", required=True, help="path to doughrun's ig.py")
-    r.add_argument("--limit", type=int, default=20)
-    r.add_argument("--whisper-model", default="small", help="smaller models use less memory")
-    r.add_argument("--state-dir", default=str(DEFAULT_STATE))
-    r.add_argument("--pause-min", type=float, default=12)
-    r.add_argument("--pause-max", type=float, default=25)
+
+    def paced(sp):
+        sp.add_argument("--handle", required=True)
+        sp.add_argument("--state-dir", default=str(DEFAULT_STATE))
+        sp.add_argument("--pause-min", type=float, default=12)
+        sp.add_argument("--pause-max", type=float, default=25)
+
+    c = sub.add_parser("collections", help="list collections; --counts also counts posts in each")
+    paced(c)
+    c.add_argument("--counts", action="store_true")
+    c.add_argument("--max-scrolls", type=int, default=60)
+
+    cap = sub.add_parser("capture", help="download one collection and write raw notes")
+    paced(cap)
+    cap.add_argument("--collection", required=True)
+    cap.add_argument("--vault", required=True)
+    cap.add_argument("--map", required=True, help="JSON file: collection name -> area folder")
+    cap.add_argument("--limit", type=int, default=20)
+
+    an = sub.add_parser("analyse", help="offline OCR + transcript for captured videos")
+    an.add_argument("--vault", required=True)
+    an.add_argument("--ig-py", required=True, help="path to doughrun's ig.py")
+    an.add_argument("--state-dir", default=str(DEFAULT_STATE))
+    an.add_argument("--whisper-model", default="small", help="smaller models use less memory")
+    an.add_argument("--langs", default="en,hi", help="transcript languages to keep")
+    an.add_argument("--limit", type=int, default=0, help="0 = all pending")
+
     args = p.parse_args(argv)
-    return asyncio.run(cmd_collections(args) if args.cmd == "collections" else cmd_run(args))
+    if args.cmd == "analyse":
+        return cmd_analyse(args)
+    return asyncio.run(cmd_collections(args) if args.cmd == "collections" else cmd_capture(args))
 
 
 if __name__ == "__main__":
