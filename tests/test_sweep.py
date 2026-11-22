@@ -125,3 +125,15 @@ def test_analyse_cache_failure_keeps_video(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, "run_doughrun", lambda *a: False)
     assert sweep.analyse_cache(post, "ig.py", "small", {"en"}) is None
     assert (post / "00.mp4").exists()
+
+
+def test_doughrun_cmd_uses_wrapper_to_lower_ocr_rate():
+    cmd = sweep.doughrun_cmd("C:/t/ig.py", Path("v.mp4"), Path("out"), "small", ocr_every=10)
+    assert cmd[:3] == ["uv", "run", str(sweep.IG_WRAPPER)]
+    assert cmd[3:5] == ["C:/t/ig.py", "10"]
+    assert cmd[5:] == ["video", "v.mp4", "--out", "out", "--model", "small"]
+
+
+def test_doughrun_cmd_without_override_calls_ig_directly():
+    cmd = sweep.doughrun_cmd("C:/t/ig.py", Path("v.mp4"), Path("out"), "small", ocr_every=None)
+    assert cmd == ["uv", "run", "C:/t/ig.py", "video", "v.mp4", "--out", "out", "--model", "small"]

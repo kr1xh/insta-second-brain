@@ -29,6 +29,7 @@ AREA_ROOT = "Instagram Brain"
 INBOX = "Inbox"
 PENDING = "<!-- analysis pending -->"
 DEFAULT_STATE = Path.home() / ".insta-second-brain"
+IG_WRAPPER = Path(__file__).resolve().parent / "ig_video.py"
 SESSION_DIR = Path.home() / ".instagram-mcp" / "sessions"
 BLOCKED_MARKERS = ("/challenge", "/accounts/login", "/accounts/suspended", "/accounts/disabled")
 
@@ -305,20 +306,28 @@ async def cmd_capture(args) -> int:
 
 # ---------- offline stage ----------
 
-def run_doughrun(ig_py: str, video: Path, out: Path, model: str) -> bool:
+def doughrun_cmd(ig_py: str, video: Path, out: Path, model: str, ocr_every: int | None) -> list[str]:
+    tail = ["video", str(video), "--out", str(out), "--model", model]
+    if ocr_every:
+        return ["uv", "run", str(IG_WRAPPER), ig_py, str(ocr_every), *tail]
+    return ["uv", "run", ig_py, *tail]
+
+
+def run_doughrun(ig_py: str, video: Path, out: Path, model: str, ocr_every: int | None = None) -> bool:
     out.mkdir(parents=True, exist_ok=True)
-    run = subprocess.run(["uv", "run", ig_py, "video", str(video), "--out", str(out), "--model", model],
+    run = subprocess.run(doughrun_cmd(ig_py, video, out, model, ocr_every),
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     return run.returncode == 0 and (out / "video_map.md").exists()
 
 
-def analyse_cache(post_dir: Path, ig_py: str, model: str, langs: set[str]) -> tuple[list[str], str] | None:
+def analyse_cache(post_dir: Path, ig_py: str, model: str, langs: set[str],
+                  ocr_every: int | None = None) -> tuple[list[str], str] | None:
     """Analyse every video in one post's cache folder, then delete the bulky files."""
     texts: list[str] = []
     speech: list[str] = []
     for video in sorted(post_dir.glob("*.mp4")):
         out = post_dir / f"map{video.stem}"
-        if not (out / "video_map.md").exists() and not run_doughrun(ig_py, video, out, model):
+        if not (out / "video_map.md").exists() and not run_doughrun(ig_py, video, out, model, ocr_every):
             return None
         texts += [t for t in screen_text((out / "video_map.md").read_text(encoding="utf-8")) if t not in texts]
         meta = load_json(out / "transcript.json")
@@ -338,7 +347,7 @@ def cmd_analyse(args) -> int:
     pending = pending[: args.limit] if args.limit else pending
     print(f"{len(pending)} post(s) with videos to analyse", flush=True)
     for i, post_dir in enumerate(pending, 1):
-        result = analyse_cache(post_dir, args.ig_py, args.whisper_model, langs)
+        result = analyse_cache(post_dir, args.ig_py, args.whisper_model, langs, args.ocr_every or None)
         if result is None:
             print(f"[{i}/{len(pending)}] {post_dir.name} analysis failed, kept for retry", flush=True)
             continue
@@ -376,6 +385,8 @@ def main(argv=None) -> int:
     an.add_argument("--ig-py", required=True, help="path to doughrun's ig.py")
     an.add_argument("--state-dir", default=str(DEFAULT_STATE))
     an.add_argument("--whisper-model", default="small", help="smaller models use less memory")
+    an.add_argument("--ocr-every", type=int, default=10,
+                    help="OCR every Nth frame of the 10 fps scan (10 = once a second; 0 = doughrun's default of 2)")
     an.add_argument("--langs", default="en,hi", help="transcript languages to keep")
     an.add_argument("--limit", type=int, default=0, help="0 = all pending")
 
