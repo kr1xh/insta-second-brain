@@ -29,5 +29,6 @@ $ig = "C:\path\to\ig-tools\instagram-scraper\plugins\instagram-scraper\skills\in
 - **Transcripts.** Whisper can invent speech from music. A transcript is kept only if speech was detected, the language is in `--langs` (default `en,hi`) and the language confidence is at least 0.8.
 - **Disk.** After analysis only the contact sheets, OCR text, transcript and video map are kept (under 1 MB per post). Failed analyses keep the video for a retry.
 - **Memory.** `--whisper-model` defaults to `small`. Use `base` on machines with little free RAM.
+- **Speed.** On a 4-core laptop CPU, OCR is the slowest step (about 3.5 s per frame). `--ocr-every 10` (the default) OCRs once a second instead of doughrun's 5 times a second, through `scripts/ig_video.py`, without editing doughrun. Measured on a 10 s reel: OCR 72 s to 35 s, total 90 s to 73 s; the text lost was flickering numbers. `--ocr-every 0` restores doughrun's rate.
 
 Known limits: comments are not read, so content gated behind "comment a keyword" is not captured. Image slides are saved but read only when a note is distilled.
