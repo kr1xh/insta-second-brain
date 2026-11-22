@@ -39,6 +39,11 @@ def plan(cfg: dict) -> list[list[str]]:
     return steps
 
 
+def no_window_flags() -> int:
+    """On Windows, start steps without a console window, so closing a window cannot kill the run."""
+    return 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+
+
 def run(cfg: dict, runner) -> int:
     steps = plan(cfg)
     for cmd in steps[:-1]:
@@ -59,7 +64,7 @@ def main(argv=None) -> int:
             step = " ".join(cmd[2:5])
             fh.write(f"\n== {datetime.now():%Y-%m-%d %H:%M} {step}\n")
             fh.flush()
-            return subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT,
+            return subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, creationflags=no_window_flags(),
                                   env={**os.environ, "PYTHONIOENCODING": "utf-8"}).returncode
 
     code = run(cfg, runner)
