@@ -7,7 +7,7 @@ import install_commands as ic  # noqa: E402
 
 def test_installs_with_vault_path_filled_in(tmp_path):
     done = ic.install("C:/vault", tmp_path)
-    assert {"ig-query.md", "ig-draft.md", "ig-distill.md", "ig-promote.md", "ig-week.md"} <= set(done)
+    assert {"ig-query.md", "ig-draft.md", "ig-distill.md", "ig-promote.md", "ig-week.md", "ig-gapfill.md"} <= set(done)
     assert "{{VAULT}}" not in (tmp_path / "ig-query.md").read_text(encoding="utf-8")
     assert "C:/vault/Instagram Brain" in (tmp_path / "ig-query.md").read_text(encoding="utf-8")
 
