@@ -554,6 +554,16 @@ def analyse_cache(post_dir: Path, ig_py: str, model: str, langs: set[str],
     return texts, "\n".join(speech)
 
 
+def find_note(code: str, notes: dict[str, Path], area_root: Path) -> Path | None:
+    """The note for a shortcode, re-indexing once if it was renamed (e.g. distilled) after indexing."""
+    note = notes.get(code)
+    if note is not None and note.exists():
+        return note
+    notes.update(index_notes(area_root))
+    note = notes.get(code)
+    return note if note is not None and note.exists() else None
+
+
 def cmd_analyse(args) -> int:
     state_dir = Path(args.state_dir)
     notes = index_notes(Path(args.vault) / AREA_ROOT)
@@ -566,7 +576,7 @@ def cmd_analyse(args) -> int:
         if result is None:
             print(f"[{i}/{len(pending)}] {post_dir.name} analysis failed, kept for retry", flush=True)
             continue
-        note = notes.get(post_dir.name)
+        note = find_note(post_dir.name, notes, Path(args.vault) / AREA_ROOT)
         if note and PENDING in (text := note.read_text(encoding="utf-8")):
             note.write_text(fill_analysis(text, *result), encoding="utf-8")
         print(f"[{i}/{len(pending)}] {post_dir.name} done", flush=True)

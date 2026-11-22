@@ -137,3 +137,15 @@ def test_doughrun_cmd_uses_wrapper_to_lower_ocr_rate():
 def test_doughrun_cmd_without_override_calls_ig_directly():
     cmd = sweep.doughrun_cmd("C:/t/ig.py", Path("v.mp4"), Path("out"), "small", ocr_every=None)
     assert cmd == ["uv", "run", "C:/t/ig.py", "video", "v.mp4", "--out", "out", "--model", "small"]
+
+
+def test_find_note_relooks_up_a_note_renamed_after_indexing(tmp_path):
+    area = tmp_path / "AI-ML"
+    area.mkdir()
+    old = area / "x - Abc123.md"
+    old.write_text("---\nsource: https://www.instagram.com/x/reel/Abc123/\n---\n", encoding="utf-8")
+    notes = sweep.index_notes(tmp_path)
+    old.rename(area / "x - Nice Title.md")
+    found = sweep.find_note("Abc123", notes, tmp_path)
+    assert found is not None and found.name == "x - Nice Title.md"
+    assert sweep.find_note("Missing", notes, tmp_path) is None
