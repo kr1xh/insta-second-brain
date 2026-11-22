@@ -17,14 +17,24 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sweep import safe_name  # noqa: E402  (same naming as the triage command)
+
 SWEEP = Path(__file__).resolve().parent / "sweep.py"
 BLOCKED = 4
 
 
 def plan(cfg: dict) -> list[list[str]]:
-    steps = [[cfg["python"], str(SWEEP), "capture", "--handle", cfg["handle"], "--collection", name,
-              "--vault", cfg["vault"], "--map", cfg["map"], "--limit", str(cfg.get("limit", 20))]
-             for name in cfg["collections"]]
+    """One capture per collection (using its triage table when there is one), then one analyse."""
+    triage_dir = Path(cfg["vault"]) / "Instagram Brain" / "Triage"
+    steps = []
+    for name in cfg["collections"]:
+        cmd = [cfg["python"], str(SWEEP), "capture", "--handle", cfg["handle"], "--collection", name,
+               "--vault", cfg["vault"], "--map", cfg["map"], "--limit", str(cfg.get("limit", 20))]
+        table = triage_dir / f"{safe_name(name)}.md"
+        if table.exists():
+            cmd += ["--picks", str(table)]
+        steps.append(cmd)
     steps.append([cfg["python"], str(SWEEP), "analyse", "--vault", cfg["vault"], "--ig-py", cfg["ig_py"]])
     return steps
 
