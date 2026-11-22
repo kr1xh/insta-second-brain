@@ -1,33 +1,59 @@
 # insta-second-brain
 
-Turn your saved Instagram folders into a searchable second brain in Obsidian, including what is shown and said inside each reel.
+Turn your saved Instagram folders into a second brain in Obsidian. Every saved post or reel becomes a note with what is said (local Whisper transcript), what is shown (OCR and key frames) and the caption. The notes then feed project ideas, outreach templates, opportunities and study notes in the rest of your vault.
 
-> Status: early. Built in phases (see Milestones). Nothing here scrapes anything yet.
+Everything runs on your own machine. Instagram is read only, slowly, with your own login.
 
-## What it does (target)
+## How it works
 
-1. Lists your Instagram saved collections.
-2. Analyzes each post or reel locally: caption, comments, on-screen text (OCR), transcript (Whisper), key frames.
-3. Writes one Markdown note per post into an Obsidian vault, grouped like your Instagram folders, with frontmatter, wikilinks and an index.
-4. Lets an AI assistant query the vault and draft emails, project plans and reel scripts from it.
+```mermaid
+flowchart LR
+    IG[(Instagram<br/>saved collections)] -->|triage: one page visit| T[Review table<br/>keep / maybe / skip]
+    T -->|capture --picks<br/>paced, read-only| C[Media cache<br/>~/.insta-second-brain]
+    C -->|analyse, offline<br/>OCR + Whisper| R[Raw notes<br/>status: raw]
+    R -->|/ig-distill| D[Distilled notes]
+    D -->|/ig-gapfill| D
+    D -->|/ig-promote| V[Vault: project ideas,<br/>outreach, opportunities,<br/>concepts, content playbook]
+    V -->|/ig-week| H[Home: this week's<br/>build, outreach, review]
+```
 
-## Privacy
+| Stage | Tool | Touches Instagram |
+|---|---|---|
+| `triage` | `scripts/sweep.py` | one page visit per folder |
+| `capture` | `scripts/sweep.py` | yes, one post at a time with 12-25 s pauses; stops on any challenge page |
+| `analyse` | `scripts/sweep.py` + [doughrun/instagram-scraper](https://github.com/doughrun/instagram-scraper) | no |
+| distill, gap-fill, promote, weekly plan | slash commands in `commands/` | no |
 
-This repo holds code, templates, docs and slash commands only. Your notes, login sessions, cookies and downloaded media live in your private vault and are gitignored. A guard script (planned) fails CI if anything private is staged.
+Instagram access goes through [YoppaV/instagram-mcp](https://github.com/YoppaV/instagram-mcp). Both tools are pinned to audited commits; see [docs/setup-windows.md](docs/setup-windows.md).
 
-## Phases
+## What a note looks like
 
-| Milestone | Goal |
+A made-up example: [docs/demo/example-note.md](docs/demo/example-note.md). The format is in [docs/note-format.md](docs/note-format.md).
+
+## Getting started
+
+1. [Set up the tools](docs/setup-windows.md) and log in once in the browser window.
+2. Create the vault area: `python scripts/bootstrap_vault.py --vault "<vault>"`.
+3. Install the commands: `python scripts/install_commands.py --vault "<vault>"`.
+4. [Sweep a folder](docs/sweep.md): `triage`, mark rows keep, `capture --picks`, `analyse`.
+5. In Claude Code: `/ig-distill`, `/ig-gapfill`, `/ig-promote`, then `/ig-week`.
+
+| Command | Does |
 |---|---|
-| M0 | Repo, vault scaffold, secret guard |
-| M1 | Tool setup on Windows, risk controls, manual login |
-| M2 | Pilot on one small folder |
-| M3 | Full sweep with batching and resume |
-| M4 | `/query`, `/draft`, vault health, cleanup |
+| `/ig-query <question>` | answers from the notes, with citations |
+| `/ig-distill` | turns raw captures into summaries |
+| `/ig-gapfill` | finds primary sources for what gated posts name |
+| `/ig-promote` | sends ideas, techniques and concepts into the rest of the vault |
+| `/ig-week` | picks one build, one outreach and the reviews for this week |
+| `/ig-draft <what>` | drafts an email, plan or script from the notes |
 
-## Risk
+Housekeeping: `scripts/vault_health.py` (report-only checks) and `scripts/cleanup.py` (removes sessions and caches, dry run by default).
 
-Reading a logged-in Instagram account with third-party tools can get the account flagged. See `docs/risk-controls.md` (coming in M1). Use at your own risk, on your own account.
+## Privacy and risk
+
+- This repo holds code and docs only. Notes, sessions, cookies and media are gitignored, and `scripts/check_no_secrets.py` fails the commit and CI if one slips in.
+- Reading a logged-in account with third-party tools is against Instagram's terms and can get an account flagged. Read [docs/risk-controls.md](docs/risk-controls.md) first; use a secondary account if you can.
+- Many posts gate their real content ("comment a keyword"). The notes say so instead of guessing.
 
 ## License
 
