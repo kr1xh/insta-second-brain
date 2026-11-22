@@ -37,6 +37,9 @@ COLLECTION_JS = r"""() => [...document.querySelectorAll('a[href*="/saved/"]')]
   .map(a => ({href: a.getAttribute('href'), text: (a.innerText || '').trim().replace(/\n+/g, ' ')}))"""
 POST_JS = r"""() => [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')]
   .map(a => a.getAttribute('href'))"""
+GRID_JS = r"""() => [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')]
+  .map(a => ({href: a.getAttribute('href'),
+              alt: [...a.querySelectorAll('img')].map(i => i.getAttribute('alt') || '').join(' ').trim()}))"""
 
 
 class Blocked(RuntimeError):
@@ -167,6 +170,55 @@ def index_notes(area_root: Path) -> dict[str, Path]:
     return found
 
 
+def parse_grid(rows: list[dict]) -> list[dict]:
+    """Grid anchors -> [{code, creator, alt}], first occurrence of each post only."""
+    out, seen = [], set()
+    for row in rows:
+        parts = row["href"].strip("/").split("/")
+        code = parts[-1]
+        if code in seen:
+            continue
+        seen.add(code)
+        creator = parts[0] if len(parts) == 3 else ""
+        out.append({"code": code, "creator": creator, "alt": row.get("alt") or ""})
+    return out
+
+
+def select_todo(hrefs: list[str], done: set[str], picks: set[str] | None, limit: int) -> list[str]:
+    todo = [h for h in hrefs if shortcode_from_href(h) not in done]
+    if picks is not None:
+        todo = [h for h in todo if shortcode_from_href(h) in picks]
+    return todo[:limit]
+
+
+def render_triage(collection: str, items: list[dict], done: set[str] = frozenset()) -> str:
+    def cell(text: str) -> str:
+        return " ".join(text.replace("|", "/").split())[:300]
+
+    lines = [
+        "---", "type: triage", f"folder: {collection}", f"created: {date.today().isoformat()}", "---",
+        f"# Triage: {collection}", "",
+        "Set `decision` to keep, maybe or skip. `capture --picks` captures only the keep rows.", "",
+        "| decision | post | creator | preview |", "|---|---|---|---|",
+    ]
+    for it in items:
+        link = f"[{it['code']}](https://www.instagram.com/p/{it['code']}/)"
+        decision = "captured" if it["code"] in done else ""
+        lines.append(f"| {decision} | {link} | {cell(it['creator'])} | {cell(it['alt'])} |")
+    return "\n".join(lines) + "\n"
+
+
+def read_picks(table: str) -> set[str]:
+    picks = set()
+    for line in table.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 2 and cells[0].casefold() == "keep":
+            m = re.search(r"\[([^\]]+)\]", cells[1])
+            if m:
+                picks.add(m.group(1))
+    return picks
+
+
 # ---------- state ----------
 
 def load_json(path: Path) -> dict:
@@ -251,6 +303,42 @@ async def cmd_collections(args) -> int:
     return 0
 
 
+async def find_collection(page, handle: str, name: str) -> dict | None:
+    match = [c for c in await list_collections(page, handle) if c["name"].casefold() == name.casefold()]
+    return match[0] if match else None
+
+
+async def cmd_triage(args) -> int:
+    state_dir = Path(args.state_dir)
+    done = set(load_json(state_dir / "sweep_state.json").get(args.collection, []))
+    done |= set(index_notes(Path(args.vault) / AREA_ROOT))  # notes captured by any route
+    out_dir = Path(args.vault) / AREA_ROOT / "Triage"
+    out = out_dir / f"{safe_name(args.collection)}.md"
+    if out.exists() and not args.force:
+        print(f"{out} exists; edit it or pass --force", file=sys.stderr)
+        return 2
+    browser = await open_browser(args.handle)
+    try:
+        async with browser.page() as page:
+            col = await find_collection(page, args.handle, args.collection)
+            if not col:
+                print(f"collection not found: {args.collection}", file=sys.stderr)
+                return 2
+            await goto(page, f"https://www.instagram.com/{args.handle}/saved/{col['slug']}/{col['id']}/")
+            rows = await collect_links(page, GRID_JS, None, scrolls=args.max_scrolls)
+    except Blocked as e:
+        print(f"STOPPED: Instagram showed {e}. Do not retry today.", file=sys.stderr)
+        return 4
+    finally:
+        await browser.shutdown()
+    items = parse_grid(rows)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out.write_text(render_triage(args.collection, items, done), encoding="utf-8")
+    with_text = sum(1 for i in items if i["alt"])
+    print(f"{len(items)} posts ({with_text} with preview text) -> {out}")
+    return 0
+
+
 async def cmd_capture(args) -> int:
     import httpx
     from instagram_sdk.downloader import extension_from_url, fetch_bytes, is_downloadable_media_url
@@ -266,19 +354,23 @@ async def cmd_capture(args) -> int:
     target = area_root / area_for(args.collection, mapping)
     target.mkdir(parents=True, exist_ok=True)
     existing = index_notes(area_root)
+    picks = read_picks(Path(args.picks).read_text(encoding="utf-8")) if args.picks else None
+    if picks is not None and not picks:
+        print(f"no rows marked keep in {args.picks}", file=sys.stderr)
+        return 2
 
     browser = await open_browser(args.handle)
     written = linked = 0
     try:
         async with browser.page() as page:
-            match = [c for c in await list_collections(page, args.handle)
-                     if c["name"].casefold() == args.collection.casefold()]
-            if not match:
+            col = await find_collection(page, args.handle, args.collection)
+            if not col:
                 print(f"collection not found: {args.collection}", file=sys.stderr)
                 return 2
-            await goto(page, f"https://www.instagram.com/{args.handle}/saved/{match[0]['slug']}/{match[0]['id']}/")
-            hrefs = await collect_links(page, POST_JS, args.limit + len(done))
-        todo = [h for h in hrefs if shortcode_from_href(h) not in done][: args.limit]
+            await goto(page, f"https://www.instagram.com/{args.handle}/saved/{col['slug']}/{col['id']}/")
+            hrefs = await collect_links(page, POST_JS, None if picks else args.limit + len(done),
+                                        scrolls=60 if picks else 40)
+        todo = select_todo(hrefs, done, picks, args.limit)
         print(f"{args.collection}: {len(hrefs)} links seen, {len(todo)} to capture -> {target.name}", flush=True)
 
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
@@ -410,6 +502,14 @@ def main(argv=None) -> int:
     cap.add_argument("--vault", required=True)
     cap.add_argument("--map", required=True, help="JSON file: collection name -> area folder")
     cap.add_argument("--limit", type=int, default=20)
+    cap.add_argument("--picks", help="triage table; capture only rows marked keep")
+
+    tri = sub.add_parser("triage", help="write a review table of a collection from its grid (one page visit)")
+    paced(tri)
+    tri.add_argument("--collection", required=True)
+    tri.add_argument("--vault", required=True)
+    tri.add_argument("--max-scrolls", type=int, default=60)
+    tri.add_argument("--force", action="store_true", help="overwrite an existing triage table")
 
     an = sub.add_parser("analyse", help="offline OCR + transcript for captured videos")
     an.add_argument("--vault", required=True)
@@ -424,7 +524,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     if args.cmd == "analyse":
         return cmd_analyse(args)
-    return asyncio.run(cmd_collections(args) if args.cmd == "collections" else cmd_capture(args))
+    commands = {"collections": cmd_collections, "capture": cmd_capture, "triage": cmd_triage}
+    return asyncio.run(commands[args.cmd](args))
 
 
 if __name__ == "__main__":
