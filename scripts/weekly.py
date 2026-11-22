@@ -12,6 +12,7 @@ Output is appended to weekly.log next to the config.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -24,17 +25,62 @@ SWEEP = Path(__file__).resolve().parent / "sweep.py"
 BLOCKED = 4
 
 
+KEEP_ROW = re.compile(r"^\| keep \| \[([^\]]+)\]", re.M)
+
+
+def triage_table(vault: str | Path, name: str) -> Path:
+    return Path(vault) / "Instagram Brain" / "Triage" / f"{safe_name(name)}.md"
+
+
+def remaining_keeps(vault: str | Path, collections: list[str], state: dict) -> dict[str, int | None]:
+    """Keep rows not captured yet, per collection; None when a collection has no triage table."""
+    out: dict[str, int | None] = {}
+    for name in collections:
+        table = triage_table(vault, name)
+        if not table.exists():
+            out[name] = None
+            continue
+        keeps = set(KEEP_ROW.findall(table.read_text(encoding="utf-8")))
+        out[name] = len(keeps - set(state.get(name, [])))
+    return out
+
+
+def allocate(order: list[str], remaining: dict[str, int | None], budget: int) -> list[tuple[str, int]]:
+    """Spend a daily budget on collections in priority order; untriaged ones (None) only get what is left."""
+    plan_: list[tuple[str, int]] = []
+    for name in order:
+        left = remaining.get(name)
+        if budget <= 0:
+            break
+        if left:
+            take = min(left, budget)
+            plan_.append((name, take))
+            budget -= take
+    for name in order:
+        if budget > 0 and remaining.get(name, None) is None and name in remaining:
+            plan_.append((name, budget))
+            budget = 0
+    return plan_
+
+
+def capture_cmd(cfg: dict, name: str, limit: int) -> list[str]:
+    cmd = [cfg["python"], str(SWEEP), "capture", "--handle", cfg["handle"], "--collection", name,
+           "--vault", cfg["vault"], "--map", cfg["map"], "--limit", str(limit)]
+    table = triage_table(cfg["vault"], name)
+    if table.exists():
+        cmd += ["--picks", str(table)]
+    return cmd
+
+
 def plan(cfg: dict) -> list[list[str]]:
-    """One capture per collection (using its triage table when there is one), then one analyse."""
-    triage_dir = Path(cfg["vault"]) / "Instagram Brain" / "Triage"
-    steps = []
-    for name in cfg["collections"]:
-        cmd = [cfg["python"], str(SWEEP), "capture", "--handle", cfg["handle"], "--collection", name,
-               "--vault", cfg["vault"], "--map", cfg["map"], "--limit", str(cfg.get("limit", 20))]
-        table = triage_dir / f"{safe_name(name)}.md"
-        if table.exists():
-            cmd += ["--picks", str(table)]
-        steps.append(cmd)
+    """Captures (per collection, or within a daily total when `daily_total` is set), then one analyse."""
+    if cfg.get("daily_total"):
+        state_path = Path(cfg.get("state", Path.home() / ".insta-second-brain" / "sweep_state.json"))
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+        remaining = remaining_keeps(cfg["vault"], cfg["collections"], state)
+        steps = [capture_cmd(cfg, name, n) for name, n in allocate(cfg["collections"], remaining, int(cfg["daily_total"]))]
+    else:
+        steps = [capture_cmd(cfg, name, int(cfg.get("limit", 20))) for name in cfg["collections"]]
     steps.append([cfg["python"], str(SWEEP), "analyse", "--vault", cfg["vault"], "--ig-py", cfg["ig_py"]])
     return steps
 
