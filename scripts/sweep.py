@@ -311,6 +311,7 @@ async def find_collection(page, handle: str, name: str) -> dict | None:
 async def cmd_triage(args) -> int:
     state_dir = Path(args.state_dir)
     done = set(load_json(state_dir / "sweep_state.json").get(args.collection, []))
+    done |= set(index_notes(Path(args.vault) / AREA_ROOT))  # notes captured by any route
     out_dir = Path(args.vault) / AREA_ROOT / "Triage"
     out = out_dir / f"{safe_name(args.collection)}.md"
     if out.exists() and not args.force:
