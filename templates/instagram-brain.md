@@ -6,12 +6,17 @@ tags: [dashboard, instagram]
 
 Notes distilled from my Instagram saved folders. One note per saved post or reel, using the [[Saved Post]] template.
 
-## Folders
-- AI-ML Projects: project ideas and tutorials
-- Quant Projects: quant finance, stats, Python
-- Reels and Content: how to make reels
-- Cold Emails: outreach to professors, labs and recruiters
-- Internships: roles, companies, where to apply
+## Areas
+Each note lives in one area and keeps its original Instagram folder in the `folder:` frontmatter. The collection-to-area mapping is in [[Folder Map]].
+
+- AI-ML
+- Quant
+- Content Creation
+- Internships and Research
+- Admissions and Profile
+- Web Dev
+- Startup and Freelance
+- Personal Growth
 
 ## Working areas
 - `Inbox/`: captured but not yet sorted. When unsure, a note goes here.
