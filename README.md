@@ -47,7 +47,7 @@ A made-up example: [docs/demo/example-note.md](docs/demo/example-note.md). The f
 | `/ig-week` | picks one build, one outreach and the reviews for this week |
 | `/ig-draft <what>` | drafts an email, plan or script from the notes |
 
-`sweep.py collections --counts` gives the exact post count of every collection in one page visit, which helps pick what to triage first. `scripts/weekly.py` runs capture and analyse for a few collections on a schedule and stops on any Instagram challenge.
+`sweep.py collections --counts` gives the exact post count of every collection in one page visit, which helps pick what to triage first. `scripts/weekly.py` runs capture and analyse on a schedule (for example 10 posts a day) and stops on any Instagram challenge. `scripts/ig-scrape.ps1` runs it now, pauses it or changes its time; see [docs/sweep.md](docs/sweep.md#scheduled-runs).
 
 Housekeeping: `scripts/vault_health.py` (report-only checks) and `scripts/cleanup.py` (removes sessions and caches, dry run by default).
 
