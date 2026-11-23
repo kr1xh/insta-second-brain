@@ -545,7 +545,11 @@ def run_doughrun(ig_py: str, video: Path, out: Path, model: str, ocr_every: int 
     out.mkdir(parents=True, exist_ok=True)
     run = subprocess.run(doughrun_cmd(ig_py, video, out, model, ocr_every),
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return run.returncode == 0 and (out / "video_map.md").exists()
+    ok = run.returncode == 0 and (out / "video_map.md").exists()
+    if not ok:  # keep the evidence: the log is the only place a failure can be diagnosed later
+        tail = " | ".join((run.stderr or "").strip().splitlines()[-3:])
+        print(f"  doughrun failed on {video.name} (exit {run.returncode}): {tail}", flush=True)
+    return ok
 
 
 def analyse_cache(post_dir: Path, ig_py: str, model: str, langs: set[str],

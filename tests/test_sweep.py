@@ -149,3 +149,15 @@ def test_find_note_relooks_up_a_note_renamed_after_indexing(tmp_path):
     found = sweep.find_note("Abc123", notes, tmp_path)
     assert found is not None and found.name == "x - Nice Title.md"
     assert sweep.find_note("Missing", notes, tmp_path) is None
+
+
+def test_failed_doughrun_prints_its_error_tail(tmp_path, monkeypatch, capsys):
+    import subprocess
+
+    def fake_run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="line1\nline2\nRuntimeError: model download failed\n")
+
+    monkeypatch.setattr(sweep.subprocess, "run", fake_run)
+    assert sweep.run_doughrun("ig.py", Path("v.mp4"), tmp_path / "out", "small") is False
+    out = capsys.readouterr().out
+    assert "exit 1" in out and "RuntimeError: model download failed" in out
