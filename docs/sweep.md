@@ -35,15 +35,38 @@ $ig = "C:\path\to\ig-tools\instagram-scraper\plugins\instagram-scraper\skills\in
 
 Known limits: other people's comments are not read, and content sent by DM ("comment EMAIL and I'll send it") cannot be captured. Image slides are saved but read only when a note is distilled.
 
-## Weekly run
+## Scheduled runs
 
-`scripts/weekly.py --config ~/.insta-second-brain/weekly.json` captures up to `limit` posts (newest first, skipping captured ones) from each listed collection, then runs `analyse`. It stops everything if a capture exits with code 4 (Instagram challenge or login page) and appends all output to `weekly.log` next to the config. Keep the config private; see the docstring in `scripts/weekly.py` for its fields.
+`scripts/weekly.py --config <config>` runs capture and then `analyse` without you. It has two modes:
 
-To run it every Sunday at 22:00 on Windows (the task needs you logged in, because the browser window is visible):
+- **Daily** (`"daily_total": 10` in the config): captures 10 posts in total per run, filling the listed collections in order from their remaining triage keeps (untriaged collections last). A collection whose keeps cannot be captured passes its share to the next one.
+- **Weekly** (no `daily_total`): captures up to `limit` posts from each listed collection.
+
+Both stop everything if a capture exits with code 4 (Instagram challenge or login page) and append all output to `weekly.log` next to the config. Keep the config private; see the docstring in `scripts/weekly.py` for its fields.
+
+Create the task once. Use `pythonw.exe` so no console window opens (closing one would kill the run). The task needs you logged in, and the laptop must stay awake: a closed lid or sleep pauses the run until it wakes.
 
 ```powershell
-schtasks /Create /TN "insta-second-brain weekly" /SC WEEKLY /D SUN /ST 22:00 `
-  /TR "\"C:\path\to\venv\Scripts\python.exe\" \"C:\path\to\insta-second-brain\scripts\weekly.py\" --config \"%USERPROFILE%\.insta-second-brain\weekly.json\""
+schtasks /Create /TN "insta-second-brain daily" /SC DAILY /ST 21:00 `
+  /TR "\"C:\path\to\venv\Scripts\pythonw.exe\" \"C:\path\to\insta-second-brain\scripts\weekly.py\" --config \"%USERPROFILE%\.insta-second-brain\daily.json\""
 ```
 
-Remove it with `schtasks /Delete /TN "insta-second-brain weekly" /F`.
+Any task named `insta-second-brain <name>` can then be controlled with `scripts/ig-scrape.ps1`:
+
+```powershell
+$ig = "C:\path\to\insta-second-brain\scripts\ig-scrape.ps1"
+powershell -ExecutionPolicy Bypass -File $ig status                     # on/off, times, next run
+powershell -ExecutionPolicy Bypass -File $ig run daily                  # run now, even while the schedule is off
+powershell -ExecutionPolicy Bypass -File $ig stop                       # stop a run; captured posts are kept
+powershell -ExecutionPolicy Bypass -File $ig off                        # pause all schedules ("unschedule" works too)
+powershell -ExecutionPolicy Bypass -File $ig on daily                   # resume, with the same times
+powershell -ExecutionPolicy Bypass -File $ig schedule daily 08:30 21:00 # new daily time(s)
+```
+
+The cap counts per run: `run` on top of the scheduled run, or two scheduled times, captures twice as many posts that day. To type just `ig-scrape`, put a one-line `ig-scrape.cmd` in a folder on your `PATH`:
+
+```bat
+@powershell -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\insta-second-brain\scripts\ig-scrape.ps1" %*
+```
+
+Delete a task with `schtasks /Delete /TN "insta-second-brain daily" /F`.
