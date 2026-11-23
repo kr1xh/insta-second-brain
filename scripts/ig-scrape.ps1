@@ -33,6 +33,19 @@ function Test-Running([string]$k) {
     (Get-ScheduledTaskInfo -TaskName $Tasks[$k]).LastTaskResult -eq 0x41301
 }
 
+# Stop-ScheduledTask ends only the process the task started, not the capture/analyse/browser children,
+# so find that process by the task's command line and end its whole tree.
+function Stop-Tree([string]$k) {
+    $a = @((Get-ScheduledTask -TaskName $Tasks[$k]).Actions)[0]
+    if ($a.Arguments) {
+        Get-CimInstance Win32_Process |
+            Where-Object { $_.CommandLine -and $_.CommandLine.Contains($a.Arguments) -and
+                           $_.CommandLine.Contains([IO.Path]::GetFileName($a.Execute)) } |
+            ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+    }
+    Stop-ScheduledTask -TaskName $Tasks[$k]
+}
+
 function Show-Status {
     foreach ($k in $Tasks.Keys) {
         $t = Get-ScheduledTask -TaskName $Tasks[$k]
@@ -61,6 +74,9 @@ switch ($Action.ToLower()) {
     'run' {
         foreach ($k in Get-Targets $Which 'daily') {
             if (Test-Running $k) { "${k}: already running"; continue }
+            # one Instagram run at a time (docs/risk-controls.md)
+            $busy = @($Tasks.Keys | Where-Object { $_ -ne $k -and (Test-Running $_) })
+            if ($busy) { "${k}: not started, $($busy -join ', ') is running. Wait, or: ig-scrape stop $($busy[0])"; continue }
             $wasOff = -not (Get-ScheduledTask -TaskName $Tasks[$k]).Settings.Enabled
             if ($wasOff) { Enable-ScheduledTask -TaskName $Tasks[$k] | Out-Null }
             Start-ScheduledTask -TaskName $Tasks[$k]
@@ -75,7 +91,7 @@ switch ($Action.ToLower()) {
     }
     'stop' {
         foreach ($k in Get-Targets $Which 'all') {
-            Stop-ScheduledTask -TaskName $Tasks[$k]
+            Stop-Tree $k
             "${k}: stopped"
         }
     }
